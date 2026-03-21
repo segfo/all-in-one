@@ -45,31 +45,28 @@ def event_frames_to_time(
 def local_maxima(tensor, filter_size=41):
   assert len(tensor.shape) in (1, 2), 'Input tensor should have 1 or 2 dimensions'
   assert filter_size % 2 == 1, 'Filter size should be an odd number'
-  
+
   original_shape = tensor.shape
+
   if len(original_shape) == 1:
     tensor = tensor.unsqueeze(0)
-  
-  # Pad the input array with the minimum value
+
   padding = filter_size // 2
   padded_arr = F.pad(tensor, (padding, padding), mode='constant', value=-torch.inf)
-  
-  # Create a rolling window view of the padded array
+
   rolling_view = padded_arr.unfold(1, filter_size, 1)
-  
-  # Find the indices of the local maxima
+
   center = filter_size // 2
-  local_maxima_mask = torch.eq(rolling_view[:, :, center], torch.max(rolling_view, dim=-1).values)
+  max_vals = torch.max(rolling_view, dim=-1).values
+  # rolling_view[:, :, center] は rolling_view の要素なので center >= max_vals は == max_vals と等価。
+  # torch.eq による float 比較と boolean mask indexing (scattered write) はいずれも ROCm Bug #10
+  # の原因となるため、>= 比較と torch.where に置き換えて GPU 上で完結させる。
+  local_maxima_mask = rolling_view[:, :, center] >= max_vals
   local_maxima_indices = local_maxima_mask.nonzero()
-  
-  # Initialize a new PyTorch tensor with zeros and the same shape as the input tensor
-  output_arr = torch.zeros_like(tensor)
-  
-  # Set the local maxima values in the output tensor
-  output_arr[local_maxima_mask] = tensor[local_maxima_mask]
-  
+
+  output_arr = torch.where(local_maxima_mask, tensor, torch.zeros_like(tensor))
   output_arr = output_arr.reshape(original_shape)
-  
+
   return output_arr, local_maxima_indices
 
 

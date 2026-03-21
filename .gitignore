@@ -8,6 +8,15 @@ viz/
 sonif/
 
 .idea/
+NATTEN/
+ROCm対応記録*/
+機能改善/
+tests/
+Quality Control/
+HumanBPM/
+music/
+rocm7.2_wheel/
+.python-version
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,macos,linux
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,macos,linux

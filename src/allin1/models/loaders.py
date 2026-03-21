@@ -44,15 +44,19 @@ def load_pretrained_model(
   assert model_name in NAME_TO_FILE, f'Unknown model name: {model_name} (expected one of {list(NAME_TO_FILE.keys())})'
 
   if device is None:
-    if torch.cuda.device_count():
+    if torch.cuda.is_available():
       device = 'cuda'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+      device = 'mps'
     else:
       device = 'cpu'
 
   filename = NAME_TO_FILE[model_name]
   checkpoint_path = hf_hub_download(repo_id='taejunkim/allinone', filename=filename, cache_dir=cache_dir)
 
-  checkpoint = torch.load(checkpoint_path, map_location=device)
+  # weights_only=False: checkpoint に OmegaConf config オブジェクトが含まれるため必須。
+  # PyTorch 2.x でデフォルト値が変更されたため明示指定。
+  checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
   config = OmegaConf.create(checkpoint['config'])
 
   model = AllInOne(config).to(device)

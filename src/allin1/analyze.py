@@ -2,6 +2,7 @@ import torch
 
 from typing import List, Union
 from tqdm import tqdm
+from .rocm_patch import apply_rocm_patches
 from .demix import demix
 from .spectrogram import extract_spectrograms
 from .models import load_pretrained_model
@@ -24,7 +25,11 @@ def analyze(
   visualize: Union[bool, PathLike] = False,
   sonify: Union[bool, PathLike] = False,
   model: str = 'harmonix-all',
-  device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+  device: str = (
+    'cuda' if torch.cuda.is_available()
+    else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    else 'cpu'
+  ),
   include_activations: bool = False,
   include_embeddings: bool = False,
   demix_dir: PathLike = './demix',
@@ -32,6 +37,8 @@ def analyze(
   keep_byproducts: bool = False,
   overwrite: bool = False,
   multiprocess: bool = True,
+  font: str = None,
+  without_beats: bool = False,
 ) -> Union[AnalysisResult, List[AnalysisResult]]:
   """
   Analyzes the provided audio files and returns the analysis results.
@@ -74,6 +81,9 @@ def analyze(
       Analysis results for the provided audio files.
   """
 
+  # ROCm 固有バグの回避パッチを適用する（非 ROCm 環境では no-op）。
+  apply_rocm_patches()
+
   # Clean up the arguments.
   return_list = True
   if not isinstance(paths, list):
@@ -113,6 +123,8 @@ def analyze(
     ]
 
   # Analyze the tracks that are not analyzed yet.
+  demix_paths = []
+  spec_paths = []
   if todo_paths:
     # Run HTDemucs for source separation only for the tracks that are not analyzed yet.
     demix_paths = demix(todo_paths, demix_dir, device)
@@ -126,7 +138,8 @@ def analyze(
       device=device,
     )
 
-    with torch.no_grad():
+    device_type = device.split(':')[0] if isinstance(device, str) else device.type
+    with torch.no_grad(), torch.amp.autocast(device_type, enabled=(device_type != 'cpu')):
       pbar = tqdm(zip(todo_paths, spec_paths), total=len(todo_paths))
       for path, spec_path in pbar:
         pbar.set_description(f'Analyzing {path.name}')
@@ -144,7 +157,7 @@ def analyze(
         # Checkpointing is always important for this kind of long-running tasks...
         # for my mental health...
         if out_dir is not None:
-          save_results(result, out_dir)
+          save_results(result, out_dir, without_beats=without_beats)
 
         results.append(result)
 
@@ -154,7 +167,7 @@ def analyze(
   if visualize:
     if visualize is True:
       visualize = './viz'
-    _visualize(results, out_dir=visualize, multiprocess=multiprocess)
+    _visualize(results, out_dir=visualize, multiprocess=multiprocess, font=font)
     print(f'=> Plots are successfully saved to {visualize}')
 
   if sonify:

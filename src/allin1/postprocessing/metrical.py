@@ -28,7 +28,9 @@ def postprocess_metrical_structure(
   activations_no_beat = 1. - activations_beat
   activations_no_downbeat = 1. - activations_downbeat
   activations_no = (activations_no_beat + activations_no_downbeat) / 2.
-  activations_xbeat = torch.maximum(torch.tensor(1e-8), activations_beat - activations_downbeat)
+  # clamp を使用: torch.maximum(torch.tensor(1e-8), ...) は torch.tensor が CPU テンソルを
+  # 生成するため GPU テンソルとデバイス不一致になる。clamp(min=) は同一テンソル上で動作する。
+  activations_xbeat = (activations_beat - activations_downbeat).clamp(min=1e-8)
   activations_combined = torch.stack([activations_xbeat, activations_downbeat, activations_no], dim=-1)
   activations_combined /= activations_combined.sum(dim=-1, keepdim=True)
   activations_combined = activations_combined.cpu().numpy()

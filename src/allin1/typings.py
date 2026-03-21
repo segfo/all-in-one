@@ -5,7 +5,7 @@ import json
 from os import PathLike
 from pathlib import Path
 from typing import List, Dict, Optional, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numpy.typing import NDArray
 
 PathLike = Union[str, PathLike]
@@ -25,6 +25,7 @@ class Segment:
   start: float
   end: float
   label: str
+  bpm: Optional[int] = None
 
 
 @dataclass
@@ -35,6 +36,7 @@ class AnalysisResult:
   downbeats: List[float]
   beat_positions: List[int]
   segments: List[Segment]
+  tempo_candidates: List[float] = field(default_factory=list)
   activations: Optional[Dict[str, NDArray]] = None
   embeddings: Optional[NDArray] = None
 
@@ -53,10 +55,11 @@ class AnalysisResult:
     result = AnalysisResult(
       path=mkpath(data['path']),
       bpm=data['bpm'],
-      beats=data['beats'],
-      downbeats=data['downbeats'],
-      beat_positions=data['beat_positions'],
+      beats=data.get('beats', []),
+      downbeats=data.get('downbeats', []),
+      beat_positions=data.get('beat_positions', []),
       segments=[Segment(**seg) for seg in data['segments']],
+      tempo_candidates=data.get('tempo_candidates', []),
     )
 
     if load_activations:

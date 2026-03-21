@@ -1,3 +1,4 @@
 from .metrical import postprocess_metrical_structure
 from .functional import postprocess_functional_structure
-from .tempo import estimate_tempo_from_beats
+from .tempo import estimate_tempo_from_beats, estimate_bpm_from_downbeats, estimate_bpm_median_from_beats
+from .tempo_estimation import estimate_bpm_from_audio, estimate_bpm_per_segment_from_audio

@@ -7,7 +7,7 @@ name = "allin1"
 dynamic = ["version"]
 description = "All-In-One Music Structure Analyzer"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = "MIT"
 keywords = ["music", "beat", "downbeat", "tracking", "structure", "analysis", "allin1"]
 authors = [
@@ -16,22 +16,27 @@ authors = [
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
   "numpy",
   "librosa",
-  "natten; platform_system == 'Darwin'",
+  "natten",
   "demucs",
   "hydra-core",
   "omegaconf",
-  "huggingface_hub",
+  "huggingface_hub>=0.20.0",
   "matplotlib",
+  "torch",
+  "torchaudio",
+  "torchvision",
+  "rocm",
+  "rocm-sdk-core",
+  "rocm-sdk-devel",
+  "rocm-sdk-libraries-custom",
+  "rocrand",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +45,6 @@ train = [
   "timm",
   "wandb",
   "mir_eval",
-  "numpy<1.24", # otherwise, mir_eval will raise AttributeError: module 'numpy' has no attribute 'int'
 ]
 
 [project.urls]
@@ -58,3 +62,13 @@ path = "src/allin1/__about__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/allin1"]
+
+[tool.uv.sources]
+torch                     = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torch-2.9.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl" }
+torchaudio                = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torchaudio-2.9.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl" }
+torchvision               = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torchvision-0.24.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl" }
+rocm                      = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm-7.2.0.dev0.tar.gz" }
+rocm-sdk-core             = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_core-7.2.0.dev0-py3-none-win_amd64.whl" }
+rocm-sdk-devel            = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_devel-7.2.0.dev0-py3-none-win_amd64.whl" }
+rocm-sdk-libraries-custom = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_libraries_custom-7.2.0.dev0-py3-none-win_amd64.whl" }
+rocrand                   = { path = "rocm_7.2_wheel/rocrand-1.0.0-py3-none-any.whl" }

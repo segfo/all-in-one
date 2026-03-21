@@ -27,9 +27,11 @@ def demix(paths: List[Path], demix_dir: Path, device: Union[str, torch.device]):
   print(f'=> Found {existing} tracks already demixed, {len(todos)} to demix.')
 
   if todos:
+    # allin1.demucs_runner 経由で起動することで、demucs サブプロセスにも
+    # ROCm パッチ（Flash/Mem-Efficient SDP 無効化等）が適用される。
     subprocess.run(
       [
-        sys.executable, '-m', 'demucs.separate',
+        sys.executable, '-m', 'allin1.demucs_runner',
         '--out', demix_dir.as_posix(),
         '--name', 'htdemucs',
         '--device', str(device),

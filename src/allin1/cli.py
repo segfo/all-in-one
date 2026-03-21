@@ -25,7 +25,11 @@ def make_parser():
                       help='Save frame-level embeddings (default: False)')
   parser.add_argument('-m', '--model', type=str, default='harmonix-all',
                       help='Name of the pretrained model to use (default: harmonix-all)')
-  parser.add_argument('-d', '--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
+  parser.add_argument('-d', '--device', type=str, default=(
+    'cuda' if torch.cuda.is_available()
+    else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    else 'cpu'
+  ),
                       help='Device to use (default: cuda if available else cpu)')
   parser.add_argument('-k', '--keep-byproducts', action='store_true',
                       help='Keep demixed audio files and spectrograms (default: False)')
@@ -35,8 +39,14 @@ def make_parser():
                       help='Path to a directory to store spectrograms (default: ./spec)')
   parser.add_argument('--overwrite', action='store_true', default=False,
                       help='Overwrite existing files (default: False)')
+  parser.add_argument('--font', type=str, default=None,
+                      help='Font name or filename stem to use for visualization '
+                           '(e.g. "NotoSansJP-Regular" or "Noto Sans JP"). '
+                           'Defaults to NotoSansJP-Regular if available.')
   parser.add_argument('--no-multiprocess', action='store_true', default=False,
                       help='Disable multiprocessing (default: False)')
+  parser.add_argument('--without-beats', action='store_true', default=False,
+                      help='Exclude beats/downbeats/beat_positions from output JSON (default: False)')
 
   return parser
 
@@ -64,6 +74,8 @@ def main():
     keep_byproducts=args.keep_byproducts,
     overwrite=args.overwrite,
     multiprocess=not args.no_multiprocess,
+    font=args.font,
+    without_beats=args.without_beats,
   )
 
   print(f'=> Analysis results are successfully saved to {args.out_dir}')

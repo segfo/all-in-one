@@ -1,18 +1,163 @@
 import numpy as np
 import json
+import librosa
 import torch
 
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 from glob import glob
-from typing import List, Union
+from typing import Dict, List, Optional, Union
 from .utils import mkpath, compact_json_number_array
-from .typings import AllInOneOutput, AnalysisResult, PathLike
+from .typings import AllInOneOutput, AnalysisResult, PathLike, Segment
 from .postprocessing import (
   postprocess_metrical_structure,
   postprocess_functional_structure,
   estimate_tempo_from_beats,
+  estimate_bpm_from_audio,
+  estimate_bpm_per_segment_from_audio,
+  estimate_bpm_from_downbeats,
 )
+
+
+def _fuse_bpm(
+  bpm_from_beats: Optional[int],
+  audio_result: dict,
+  beats_count: int = 0,
+  tolerance: int = 5,
+) -> Optional[int]:
+  """ビートベースと tempogram ベースの BPM 推定を統合して最終 BPM を決定する。
+
+  - ビート数が少ないほど beat-based の信頼性が低いため、tolerance をビート数に応じて動的に調整する（改善 9-1）。
+  - 両者が直接一致、または半速/倍速の関係で合意している場合は beat-based を採用する（改善 9-2）。
+  - 合意しない場合は tempogram を採用する。
+  """
+  audio_bpm = float(audio_result.get("tempo") or 0.0)
+
+  if bpm_from_beats is None:
+    return int(round(audio_bpm)) if audio_bpm else None
+  if not audio_bpm:
+    return bpm_from_beats
+
+  # ビート数に応じて tolerance を動的調整（改善 9-1）
+  dynamic_tolerance = max(3, 10 - beats_count // 10)
+  effective_tolerance = min(tolerance, dynamic_tolerance)
+
+  # 直接一致 or 半速/倍速の関係で合意していれば beat-based を採用（改善 9-2）
+  for factor in (1.0, 0.5, 2.0):
+    if abs(bpm_from_beats - audio_bpm * factor) <= effective_tolerance:
+      return bpm_from_beats
+
+  # 乖離している → tempogram を採用
+  return int(round(audio_bpm))
+
+
+def _select_representative_bpm(
+  segments: List[Segment],
+  current_bpm: Optional[int],
+  tempo_candidates: List[float],
+  tolerance: int = 5,
+) -> Optional[int]:
+  """セクション別 BPM のアンサンブルで代表 BPM を検証・補正する。
+
+  1. セクション BPM を継続時間で重み付け投票
+  2. ±tolerance BPM 以内 or 半速/倍速を同クラスタに集約
+  3. 最大重みクラスタ → dominant_bpm
+  4. tempo_candidates と harmonic-aware 照合 → best_candidate（候補の元スケールを維持）
+  5. 最終選出:
+     - |current - best| ≤ 2 → current 維持（小差は beat-based を信頼）
+     - オクターブ関係 かつ current スケール支持セクションあり → current 維持
+     - それ以外 → best_candidate 採用
+  """
+  # Step 1: 継続時間重み付き投票
+  weighted_votes: Dict[int, float] = defaultdict(float)
+  for seg in segments:
+    if seg.bpm is not None and seg.bpm > 0:
+      weighted_votes[seg.bpm] += seg.end - seg.start
+
+  if not weighted_votes:
+    return current_bpm
+
+  # Step 2: Harmonic-aware クラスタリング（重みの大きい BPM からシードとして処理）
+  clustered: Dict[int, float] = {}
+  for bpm_val in sorted(weighted_votes, key=weighted_votes.__getitem__, reverse=True):
+    weight = weighted_votes[bpm_val]
+    placed = False
+    for c in list(clustered):
+      if abs(c - bpm_val) <= tolerance:
+        clustered[c] += weight
+        placed = True
+        break
+      for factor in (0.5, 2.0):
+        if abs(c - bpm_val * factor) <= tolerance:
+          clustered[c] += weight
+          placed = True
+          break
+      if placed:
+        break
+    if not placed:
+      clustered[bpm_val] = weight
+
+  # Step 3: 最大重みクラスタ → dominant_bpm
+  dominant_bpm = max(clustered, key=clustered.__getitem__)
+
+  # Step 4: tempo_candidates との harmonic-aware 照合（候補の元スケールを維持）
+  best_candidate: Optional[int] = None
+  best_dist = float('inf')
+  for cand in tempo_candidates:
+    for factor in (1.0, 0.5, 2.0):
+      dist = abs(dominant_bpm - cand * factor)
+      if dist < best_dist:
+        best_dist = dist
+        best_candidate = int(round(cand))
+
+  # Step 5: 最終選出
+  if current_bpm is None:
+    return best_candidate
+  if best_candidate is None:
+    return current_bpm
+
+  # ±2 BPM 以内（丸め誤差・小差）→ beat-based の current_bpm を維持
+  if abs(current_bpm - best_candidate) <= 2:
+    return current_bpm
+
+  # オクターブ関係の場合、セクション内に current スケールのサポートがあれば維持
+  # 例: ファンタスティック（current=109, best=216, instに110あり → 109維持）
+  # 例: 戦場の華（current=97, best=194, 97近傍セクションなし → 194採用）
+  for factor in (0.5, 2.0):
+    if abs(current_bpm - best_candidate * factor) <= tolerance:
+      if any(
+        seg.bpm is not None and abs(seg.bpm - current_bpm) <= tolerance
+        for seg in segments
+      ):
+        return current_bpm
+      break  # サポートなし → best_candidate へ
+
+  return best_candidate
+
+
+def _correct_with_downbeat_bpm(
+  bpm: Optional[int],
+  beats: List[float],
+  downbeats: List[float],
+  tolerance: int = 3,
+) -> Optional[int]:
+  """ダウンビート間隔BPMで最終BPMを精度補正する。
+
+  _select_representative_bpm() の結果に対してのみ適用する「精密層」。
+  小節単位BPM（実測値）が現在BPMの ±tolerance 内なら小節単位BPMを採用する。
+  範囲外なら変更しない（既存アルゴリズムの結果を信頼する）。
+
+  テンポグラム量子化誤差（±3BPM 程度）を補正するために使用する。
+  """
+  if bpm is None:
+    return bpm
+  downbeat_bpm = estimate_bpm_from_downbeats(beats, downbeats)
+  if downbeat_bpm is None:
+    return bpm
+  if abs(bpm - downbeat_bpm) <= tolerance:
+    return downbeat_bpm
+  return bpm
 
 
 def run_inference(
@@ -23,30 +168,81 @@ def run_inference(
   include_activations: bool,
   include_embeddings: bool,
 ) -> AnalysisResult:
-  spec = np.load(spec_path)
-  spec = torch.from_numpy(spec).unsqueeze(0).to(device)
+  spec = None
+  logits = None
+  try:
+    # 生音声をロードして tempogram ベース推定を実行する（NN に非依存）
+    y, sr = librosa.load(str(path), sr=None, mono=True)
+    audio_result = estimate_bpm_from_audio(y, sr)
+    # y はセクション別 BPM 推定のために保持する（後で解放）
 
-  logits = model(spec)
+    spec = torch.from_numpy(np.load(spec_path)).unsqueeze(0).to(device)
 
-  metrical_structure = postprocess_metrical_structure(logits, model.cfg)
-  functional_structure = postprocess_functional_structure(logits, model.cfg)
-  bpm = estimate_tempo_from_beats(metrical_structure['beats'])
+    logits = model(spec)
 
-  result = AnalysisResult(
-    path=path,
-    bpm=bpm,
-    segments=functional_structure,
-    **metrical_structure,
-  )
+    metrical_structure = postprocess_metrical_structure(logits, model.cfg)
+    functional_structure = postprocess_functional_structure(logits, model.cfg)
+    bpm_from_beats = estimate_tempo_from_beats(metrical_structure['beats'])
+    bpm = _fuse_bpm(
+      bpm_from_beats,
+      audio_result,
+      beats_count=len(metrical_structure['beats']),
+    )
 
-  if include_activations:
-    activations = compute_activations(logits)
-    result.activations = activations
+    # セクションごとの BPM を tempogram ロジックで推定
+    segment_bpms = estimate_bpm_per_segment_from_audio(y, sr, functional_structure)
+    del y  # セクション別推定完了後に解放
+    for segment, seg_bpm in zip(functional_structure, segment_bpms):
+      segment.bpm = seg_bpm
 
-  if include_embeddings:
-    result.embeddings = logits.embeddings[0].cpu().numpy()
+    # セクション BPM のアンサンブルで代表 BPM を再選出
+    # bpm_from_beats（全ビートのグローバル分布）を候補に追加して多テンポ曲対応を強化する
+    extended_candidates = list(audio_result['tempo_candidates'])
+    if bpm_from_beats is not None:
+      # 既存候補と ±3 BPM 以内でなければ追加（重複防止）
+      if not any(abs(bpm_from_beats - round(c)) <= 3 for c in extended_candidates):
+        extended_candidates.append(float(bpm_from_beats))
+    bpm = _select_representative_bpm(
+      segments=functional_structure,
+      current_bpm=bpm,
+      tempo_candidates=extended_candidates,
+    )
 
-  return result
+    # ダウンビート間隔BPM による精度補正（テンポグラム量子化誤差 ±3BPM 対策）
+    bpm = _correct_with_downbeat_bpm(
+      bpm=bpm,
+      beats=metrical_structure['beats'],
+      downbeats=metrical_structure['downbeats'],
+      tolerance=3,
+    )
+
+    result = AnalysisResult(
+      path=path,
+      bpm=bpm,
+      segments=functional_structure,
+      tempo_candidates=audio_result['tempo_candidates'],
+      **metrical_structure,
+    )
+
+    if include_activations:
+      activations = compute_activations(logits)
+      result.activations = activations
+
+    if include_embeddings:
+      result.embeddings = logits.embeddings[0].cpu().numpy()
+
+    return result
+  finally:
+    # ROCm では GPU テンソルが残ったままプロセス終了シーケンスに入ると
+    # HIP ランタイムがデッドロックする (CUDAtoROCmPorting.md Bug #12)。
+    # 例外発生時も含め、推論ごとに確実に解放する。
+    if spec is not None:
+      del spec
+    if logits is not None:
+      del logits
+    if torch.cuda.is_available():
+      torch.cuda.synchronize()
+      torch.cuda.empty_cache()
 
 
 def compute_activations(logits: AllInOneOutput):
@@ -95,6 +291,7 @@ def rmdir_if_empty(path: Path):
 def save_results(
   results: Union[AnalysisResult, List[AnalysisResult]],
   out_dir: PathLike,
+  without_beats: bool = False,
 ):
   if not isinstance(results, list):
     results = [results]
@@ -105,6 +302,11 @@ def save_results(
     out_path = out_dir / result.path.with_suffix('.json').name
     result = asdict(result)
     result['path'] = str(result['path'])
+
+    if without_beats:
+      result.pop('beats', None)
+      result.pop('downbeats', None)
+      result.pop('beat_positions', None)
 
     activations = result.pop('activations')
     if activations is not None:
