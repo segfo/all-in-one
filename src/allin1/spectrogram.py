@@ -1,15 +1,21 @@
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple, Any
 from tqdm import tqdm
 from multiprocessing import Pool
-from madmom.audio.signal import FramedSignalProcessor, Signal
-from madmom.audio.stft import ShortTimeFourierTransformProcessor
-from madmom.processors import SequentialProcessor
-from madmom.audio.spectrogram import FilteredSpectrogramProcessor, LogarithmicSpectrogramProcessor
+
+if TYPE_CHECKING:
+    from madmom.audio.signal import Signal
+    from madmom.processors import SequentialProcessor
 
 
 def extract_spectrograms(demix_paths: List[Path], spec_dir: Path, multiprocess: bool = True):
+  # madmom のインポートは関数内で遅延ロード（トップレベルでは不要）
+  from madmom.audio.signal import FramedSignalProcessor, Signal
+  from madmom.audio.stft import ShortTimeFourierTransformProcessor
+  from madmom.processors import SequentialProcessor
+  from madmom.audio.spectrogram import FilteredSpectrogramProcessor, LogarithmicSpectrogramProcessor
+
   todos = []
   spec_paths = []
   for src in demix_paths:
@@ -60,7 +66,8 @@ def extract_spectrograms(demix_paths: List[Path], spec_dir: Path, multiprocess: 
   return spec_paths
 
 
-def _extract_spectrogram(args: Tuple[Path, Path, SequentialProcessor]):
+def _extract_spectrogram(args: Tuple[Path, Path, Any]):
+  from madmom.audio.signal import Signal
   src, dst, processor = args
 
   dst.parent.mkdir(parents=True, exist_ok=True)
