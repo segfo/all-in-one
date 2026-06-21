@@ -38,6 +38,9 @@ dependencies = [
   "rocm-sdk-libraries-custom",
   "rocrand",
 ]
+# madmomはpip install git+https://github.com/CPJKU/madmomでインストール済み（README.md参照）
+# 依存関係に追加すると破損する。
+# madmom==0.17.dev0 (from git+https://github.com/CPJKU/madmom@27f032e8947204902c675e5e341a3faf5dc86dae)がインストールされる
 
 [project.optional-dependencies]
 train = [

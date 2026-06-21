@@ -28,6 +28,22 @@ class Segment:
   bpm: Optional[int] = None
 
 
+def _load_segment(seg: dict) -> 'Segment':
+  d = dict(seg)
+  d.pop('chord prog', None)
+  d.pop('chord_prog', None)
+  return Segment(**d)
+
+
+@dataclass
+class ChordSegment:
+  start: float
+  end: float
+  label: str
+  label_raw: str = ''
+  confidence: float = 0.0
+
+
 @dataclass
 class AnalysisResult:
   path: Path
@@ -39,6 +55,7 @@ class AnalysisResult:
   tempo_candidates: List[float] = field(default_factory=list)
   activations: Optional[Dict[str, NDArray]] = None
   embeddings: Optional[NDArray] = None
+  chords: Optional[List['ChordSegment']] = None
 
   @staticmethod
   def from_json(
@@ -58,7 +75,7 @@ class AnalysisResult:
       beats=data.get('beats', []),
       downbeats=data.get('downbeats', []),
       beat_positions=data.get('beat_positions', []),
-      segments=[Segment(**seg) for seg in data['segments']],
+      segments=[_load_segment(seg) for seg in data['segments']],
       tempo_candidates=data.get('tempo_candidates', []),
     )
 
@@ -72,6 +89,10 @@ class AnalysisResult:
       embed_path = path.with_suffix('.embed.npy')
       if embed_path.is_file():
         result.embeddings = np.load(embed_path)
+
+    raw_chords = data.get('chords')
+    if raw_chords:
+      result.chords = [ChordSegment(**c) for c in raw_chords]
 
     return result
 

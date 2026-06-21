@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `chord_detection.py`: stem 無音ゲートを追加。各区間で stem のフレーム RMS が自ピークの
+  相対閾値（`STEM_SILENCE_REL`）未満なら投票から除外する。これにより**ベースが鳴っていない
+  区間（イントロ等）で bass の `N` 票が `other` の実コードを潰す問題**を解消し、bass 無音時は
+  `other`/`vocals` がコードを決めるようになった。
+
 ### Changed
 
 - `postprocessing/helpers.py`: `local_maxima()` を CPU 転送なしの GPU ネイティブ実装に変更。
