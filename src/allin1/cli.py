@@ -43,11 +43,12 @@ def make_parser():
                       help='Font name or filename stem to use for visualization '
                            '(e.g. "NotoSansJP-Regular" or "Noto Sans JP"). '
                            'Defaults to NotoSansJP-Regular if available.')
-  parser.add_argument('--no-multiprocess', action='store_true', default=False,
-                      help='Disable multiprocessing (default: False)')
+  parser.add_argument('--multiprocess', action='store_true', default=False,
+                      help='Enable multiprocessing for spectrogram/visualization/sonification (default: False)')
   parser.add_argument('--without-beats', action='store_true', default=False,
                       help='Exclude beats/downbeats/beat_positions from output JSON (default: False)')
-
+  parser.add_argument('--chords', action='store_true', default=False,
+                      help='Run madmom chord detection and include chord segments in output (default: False)')
   return parser
 
 
@@ -73,9 +74,10 @@ def main():
     spec_dir=args.spec_dir,
     keep_byproducts=args.keep_byproducts,
     overwrite=args.overwrite,
-    multiprocess=not args.no_multiprocess,
+    multiprocess=args.multiprocess,
     font=args.font,
     without_beats=args.without_beats,
+    detect_chords=args.chords,
   )
 
   print(f'=> Analysis results are successfully saved to {args.out_dir}')

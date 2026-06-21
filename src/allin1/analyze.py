@@ -15,6 +15,7 @@ from .helpers import (
   rmdir_if_empty,
   save_results,
 )
+from .chord_detection import detect_chords as _detect_chords
 from .utils import mkpath, load_result
 from .typings import AnalysisResult, PathLike
 
@@ -36,9 +37,10 @@ def analyze(
   spec_dir: PathLike = './spec',
   keep_byproducts: bool = False,
   overwrite: bool = False,
-  multiprocess: bool = True,
+  multiprocess: bool = False,
   font: str = None,
   without_beats: bool = False,
+  detect_chords: bool = True,
 ) -> Union[AnalysisResult, List[AnalysisResult]]:
   """
   Analyzes the provided audio files and returns the analysis results.
@@ -73,7 +75,7 @@ def analyze(
   overwrite : bool, optional
       Whether to overwrite the existing analysis results or not. Default is False.
   multiprocess : bool, optional
-      Whether to use multiprocessing for spectrogram extraction, visualization, and sonification. Default is True.
+      Whether to use multiprocessing for spectrogram extraction, visualization, and sonification. Default is False.
 
   Returns
   -------
@@ -123,16 +125,8 @@ def analyze(
     ]
 
   # Analyze the tracks that are not analyzed yet.
-  demix_paths = []
-  spec_paths = []
   if todo_paths:
-    # Run HTDemucs for source separation only for the tracks that are not analyzed yet.
-    demix_paths = demix(todo_paths, demix_dir, device)
-
-    # Extract spectrograms for the tracks that are not analyzed yet.
-    spec_paths = extract_spectrograms(demix_paths, spec_dir, multiprocess)
-
-    # Load the model.
+    # Load the model once before the per-file loop.
     model = load_pretrained_model(
       model_name=model,
       device=device,
@@ -140,9 +134,13 @@ def analyze(
 
     device_type = device.split(':')[0] if isinstance(device, str) else device.type
     with torch.no_grad(), torch.amp.autocast(device_type, enabled=(device_type != 'cpu')):
-      pbar = tqdm(zip(todo_paths, spec_paths), total=len(todo_paths))
-      for path, spec_path in pbar:
+      pbar = tqdm(todo_paths, total=len(todo_paths))
+      for path in pbar:
         pbar.set_description(f'Analyzing {path.name}')
+
+        # Process one file at a time to avoid OOM from accumulating intermediate files.
+        demix_path = demix([path], demix_dir, device)[0]
+        spec_path = extract_spectrograms([demix_path], spec_dir, multiprocess=False)[0]
 
         result = run_inference(
           path=path,
@@ -153,6 +151,14 @@ def analyze(
           include_embeddings=include_embeddings,
         )
 
+        if detect_chords:
+          result.chords = _detect_chords(
+            audio_path=path,
+            beats=result.beats,
+            downbeats=result.downbeats,
+            demix_path=demix_path,
+          )
+
         # Save the result right after the inference.
         # Checkpointing is always important for this kind of long-running tasks...
         # for my mental health...
@@ -160,6 +166,13 @@ def analyze(
           save_results(result, out_dir, without_beats=without_beats)
 
         results.append(result)
+
+        # Clean up intermediate files immediately after each track to free memory.
+        if not keep_byproducts:
+          for stem in ['bass', 'drums', 'other', 'vocals']:
+            (demix_path / f'{stem}.wav').unlink(missing_ok=True)
+          rmdir_if_empty(demix_path)
+          spec_path.unlink(missing_ok=True)
 
   # Sort the results by the original order of the tracks.
   results = sorted(results, key=lambda result: paths.index(result.path))
@@ -177,15 +190,8 @@ def analyze(
     print(f'=> Sonified tracks are successfully saved to {sonify}')
 
   if not keep_byproducts:
-    for path in demix_paths:
-      for stem in ['bass', 'drums', 'other', 'vocals']:
-        (path / f'{stem}.wav').unlink(missing_ok=True)
-      rmdir_if_empty(path)
     rmdir_if_empty(demix_dir / 'htdemucs')
     rmdir_if_empty(demix_dir)
-
-    for path in spec_paths:
-      path.unlink(missing_ok=True)
     rmdir_if_empty(spec_dir)
 
   if not return_list:

@@ -29,15 +29,17 @@ def demix(paths: List[Path], demix_dir: Path, device: Union[str, torch.device]):
   if todos:
     # allin1.demucs_runner 経由で起動することで、demucs サブプロセスにも
     # ROCm パッチ（Flash/Mem-Efficient SDP 無効化等）が適用される。
-    subprocess.run(
-      [
-        sys.executable, '-m', 'allin1.demucs_runner',
-        '--out', demix_dir.as_posix(),
-        '--name', 'htdemucs',
-        '--device', str(device),
-        *[path.as_posix() for path in todos],
-      ],
-      check=True,
-    )
+    # メモリ不足を避けるため1トラックずつ処理する。
+    for path in todos:
+      subprocess.run(
+        [
+          sys.executable, '-m', 'allin1.demucs_runner',
+          '--out', demix_dir.as_posix(),
+          '--name', 'htdemucs',
+          '--device', str(device),
+          path.as_posix(),
+        ],
+        check=True,
+      )
 
   return demix_paths
