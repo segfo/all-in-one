@@ -12,6 +12,9 @@ music_ml/
 outputs/
 temp.py
 
+# ルートの CLAUDE.md は公開リポジトリに含めず別リポジトリで管理する（ルート限定）
+/CLAUDE.md
+
 .idea/
 NATTEN/
 ROCm対応記録*/
