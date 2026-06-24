@@ -75,3 +75,8 @@ rocm-sdk-core             = { url = "https://repo.radeon.com/rocm/windows/rocm-r
 rocm-sdk-devel            = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_devel-7.2.0.dev0-py3-none-win_amd64.whl" }
 rocm-sdk-libraries-custom = { url = "https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_libraries_custom-7.2.0.dev0-py3-none-win_amd64.whl" }
 rocrand                   = { path = "rocm_7.2_wheel/rocrand-1.0.0-py3-none-any.whl" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
