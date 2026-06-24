@@ -8,9 +8,10 @@ demix.py から `-m allin1.demucs_runner` として呼び出される。
 ROCm の Flash/Mem-Efficient SDP NaN バグを回避できる。
 """
 
-from allin1.rocm_patch import apply_rocm_patches
+from allin1.rocm_patch import apply_rocm_patches, patch_torchaudio_load
 
 apply_rocm_patches()
+patch_torchaudio_load()
 
 # python -m demucs.separate と同等の実行
 import runpy  # noqa: E402

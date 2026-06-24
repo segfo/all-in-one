@@ -28,6 +28,8 @@ def apply_rocm_patches() -> None:
       - GroupNorm GPU fp32 アップキャスト (Bug #2)
       - demucs sin_embedding GPU ネイティブ exp 実装 (Bug #3)
       - Conv1d GPU fp32 アップキャスト (Bug #5)
+      - demucs htdemucs mean/std CPU フォールバック (Bug #16)
+      - demucs STFT/iSTFT CPU フォールバック (Bug #15)
     """
     if not is_rocm():
         return
@@ -47,6 +49,12 @@ def apply_rocm_patches() -> None:
 
     # Bug #5: fp16 Conv1d NaN（GPU fp32 アップキャストで回避）
     _patch_conv1d()
+
+    # Bug #16: demucs htdemucs mean/std reduction NaN（CPU フォールバックで回避）
+    _patch_htdemucs_normalization()
+
+    # Bug #15: demucs STFT/iSTFT CPU フォールバック（fp16 精度問題の回避）
+    _patch_stft_iSTFT()
 
 
 def _patch_layer_norm() -> None:
@@ -228,6 +236,236 @@ def _patch_conv1d() -> None:
     nn.Conv1d._rocm_patched = True
 
 
+def _patch_htdemucs_normalization() -> None:
+    """HTDemucs の forward 内の mean/std 正規化を CPU フォールバックに差し替える。
+
+    ROCm の大規模 reduction 演算が NaN を生成する (CUDAtoROCmPorting.md Bug #16)。
+    回避策として CPU に転送して mean/std を計算し、結果を GPU に戻す。
+
+    対象箇所：htdemucs.py の forward() 内、正規化ステップ 2 箇所
+      - 周波数ブランチ：mean = x.mean(dim=(1, 2, 3)), std = x.std(dim=(1, 2, 3))
+      - 時間ブランチ：meant = xt.mean(dim=(1, 2)), stdt = xt.std(dim=(1, 2))
+
+    元の forward メソッドの構造を完全に維持するため、全コードをコピーして
+    mean/std の計算部分だけを CPU フォールバックに変更する。
+    """
+    try:
+        import demucs.htdemucs as _htd
+    except ImportError:
+        return
+
+    if getattr(_htd.HTDemucs, '_rocm_norm_patched', False):
+        return
+
+    _orig_forward = _htd.HTDemucs.forward
+
+    def _rocm_forward(self, mix):
+        length = mix.shape[-1]
+        length_pre_pad = None
+        if self.use_train_segment:
+            if self.training:
+                from fractions import Fraction
+                self.segment = Fraction(mix.shape[-1], self.samplerate)
+            else:
+                training_length = int(self.segment * self.samplerate)
+                if mix.shape[-1] < training_length:
+                    length_pre_pad = mix.shape[-1]
+                    mix = F.pad(mix, (0, training_length - length_pre_pad))
+
+        z = self._spec(mix)
+        mag = self._magnitude(z).to(mix.device)
+        x = mag
+
+        B, C, Fq, T = x.shape
+
+        # ROCm CPU フォールバック：GPU 上の reduction NaN バグを回避するため CPU で計算
+        _is_rocm = x.is_cuda and torch.version.hip is not None
+
+        if _is_rocm:
+            x_cpu = x.cpu()
+            mean = x_cpu.mean(dim=(1, 2, 3), keepdim=True).to(x.device)
+            std = x_cpu.std(dim=(1, 2, 3), keepdim=True).to(x.device)
+        else:
+            mean = x.mean(dim=(1, 2, 3), keepdim=True)
+            std = x.std(dim=(1, 2, 3), keepdim=True)
+        x = (x - mean) / (1e-5 + std)
+
+        xt = mix
+        if _is_rocm:
+            xt_cpu = xt.cpu()
+            meant = xt_cpu.mean(dim=(1, 2), keepdim=True).to(xt.device)
+            stdt = xt_cpu.std(dim=(1, 2), keepdim=True).to(xt.device)
+        else:
+            meant = xt.mean(dim=(1, 2), keepdim=True)
+            stdt = xt.std(dim=(1, 2), keepdim=True)
+        xt = (xt - meant) / (1e-5 + stdt)
+
+        saved = []
+        saved_t = []
+        lengths = []
+        lengths_t = []
+
+        for idx, encode in enumerate(self.encoder):
+            lengths.append(x.shape[-1])
+            inject = None
+            if idx < len(self.tencoder):
+                lengths_t.append(xt.shape[-1])
+                tenc = self.tencoder[idx]
+                xt = tenc(xt)
+                if not tenc.empty:
+                    saved_t.append(xt)
+                else:
+                    inject = xt
+            x = encode(x, inject)
+            if idx == 0 and self.freq_emb is not None:
+                frs = torch.arange(x.shape[-2], device=x.device)
+                emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+                x = x + self.freq_emb_scale * emb
+
+            saved.append(x)
+
+        if self.crosstransformer:
+            if self.bottom_channels:
+                b, c, f, t = x.shape
+                # rearrange "b c f t -> b c (f t)" → channel_upsampler → "b c (f t) -> b c f t"
+                # channel_upsampler は c を変えるため reshape 後は -1 で推論する
+                x = self.channel_upsampler(x.reshape(b, c, f * t))
+                x = x.reshape(b, -1, f, t)
+                xt = self.channel_upsampler_t(xt)
+
+            x, xt = self.crosstransformer(x, xt)
+
+            if self.bottom_channels:
+                x = self.channel_downsampler(x.reshape(b, -1, f * t))
+                x = x.reshape(b, -1, f, t)
+                xt = self.channel_downsampler_t(xt)
+
+        for idx, decode in enumerate(self.decoder):
+            skip = saved.pop(-1)
+            x, pre = decode(x, skip, lengths.pop(-1))
+
+            offset = self.depth - len(self.tdecoder)
+            if idx >= offset:
+                tdec = self.tdecoder[idx - offset]
+                length_t = lengths_t.pop(-1)
+                if tdec.empty:
+                    assert pre.shape[2] == 1, pre.shape
+                    pre = pre[:, :, 0]
+                    xt, _ = tdec(pre, None, length_t)
+                else:
+                    skip = saved_t.pop(-1)
+                    xt, _ = tdec(xt, skip, length_t)
+
+        assert len(saved) == 0
+        assert len(lengths_t) == 0
+        assert len(saved_t) == 0
+
+        S = len(self.sources)
+        x = x.view(B, S, -1, Fq, T)
+        x = x * std[:, None] + mean[:, None]
+
+        x_is_mps = x.device.type == "mps"
+        if x_is_mps:
+            x = x.cpu()
+
+        zout = self._mask(z, x)
+        if self.use_train_segment:
+            if self.training:
+                x = self._ispec(zout, length)
+            else:
+                x = self._ispec(zout, training_length)
+        else:
+            x = self._ispec(zout, length)
+
+        if x_is_mps:
+            x = x.to("mps")
+
+        if self.use_train_segment:
+            if self.training:
+                xt = xt.view(B, S, -1, length)
+            else:
+                xt = xt.view(B, S, -1, training_length)
+        else:
+            xt = xt.view(B, S, -1, length)
+        xt = xt * stdt[:, None] + meant[:, None]
+        x = xt + x
+
+        if length_pre_pad is not None:
+            x = x[..., :length_pre_pad]
+
+        return x
+
+    _htd.HTDemucs.forward = _rocm_forward
+    _htd.HTDemucs._rocm_norm_patched = True
+
+
+def _patch_stft_iSTFT() -> None:
+    """demucs.spec の spectro/ispectro を CPU フォールバックに差し替える。
+
+    ROCm の STFT/iSTFT カーネルが fp16 入力で精度問題を起こす (CUDAtoROCmPorting.md Bug #15)。
+    iSTFT の center=True OLA 合成は右端境界で誤差が出やすく、
+    これがオーディオ末尾（Outro 領域）の分離ステムを汚染する主な原因となる。
+    回避策として CPU に転送して計算し、結果を GPU に戻す。
+    """
+    try:
+        import demucs.spec as _spec
+    except ImportError:
+        return
+
+    if getattr(_spec, '_rocm_stft_patched', False):
+        return
+
+    _orig_spectro = _spec.spectro
+    _orig_ispectro = _spec.ispectro
+
+    def _rocm_spectro(x, n_fft=512, hop_length=None, pad=0):
+        *other, length = x.shape
+        x = x.reshape(-1, length)
+        _is_rocm = x.is_cuda and torch.version.hip is not None
+        if not _is_rocm:
+            return _orig_spectro(x.view(*other, length), n_fft, hop_length, pad)
+        x_cpu = x.cpu()
+        z = torch.stft(
+            x_cpu,
+            n_fft * (1 + pad),
+            hop_length or n_fft // 4,
+            window=torch.hann_window(n_fft).to(x_cpu),
+            win_length=n_fft,
+            normalized=True,
+            center=True,
+            return_complex=True,
+            pad_mode='reflect',
+        )
+        _, freqs, frame = z.shape
+        return z.view(*other, freqs, frame).to(x.device)
+
+    def _rocm_ispectro(z, hop_length=None, length=None, pad=0):
+        *other, freqs, frames = z.shape
+        n_fft = 2 * freqs - 2
+        z = z.view(-1, freqs, frames)
+        _is_rocm = z.is_cuda and torch.version.hip is not None
+        if not _is_rocm:
+            return _orig_ispectro(z.view(*other, freqs, frames), hop_length, length, pad)
+        z_cpu = z.cpu()
+        win_length = n_fft // (1 + pad)
+        x = torch.istft(
+            z_cpu,
+            n_fft,
+            hop_length,
+            window=torch.hann_window(win_length).to(z_cpu.real),
+            win_length=win_length,
+            normalized=True,
+            length=length,
+            center=True,
+        )
+        _, out_length = x.shape
+        return x.view(*other, out_length).to(z.device)
+
+    _spec.spectro = _rocm_spectro
+    _spec.ispectro = _rocm_ispectro
+    _spec._rocm_stft_patched = True
+
+
 def na1d_rocm(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -360,6 +598,43 @@ def na2d_rocm(
     out = sum(attn[..., i].unsqueeze(-1) * v_neighbors[i]
               for i in range(n))                                              # [B, H, HH, WW, Dh]
     return out.permute(0, 2, 3, 1, 4)                                        # [B, HH, WW, H, Dh]
+
+
+def patch_torchaudio_load() -> None:
+    """torchcodec が未インストールの場合に torchaudio.load を soundfile ベースの実装に差し替える。
+
+    torchaudio 2.9 以降は torchcodec を必須としているが、ROCm Windows 環境では
+    torchcodec が提供されていない。soundfile + numpy を使って同等の動作を再現する。
+    """
+    try:
+        from torchcodec.decoders import AudioDecoder  # noqa: F401
+        return  # torchcodec が使える場合はそのまま
+    except ImportError:
+        pass
+
+    import torchaudio
+
+    if getattr(torchaudio, '_soundfile_patched', False):
+        return
+
+    def _load_via_soundfile(uri, frame_offset=0, num_frames=-1, normalize=True,
+                            channels_first=True, format=None, buffer_size=4096,
+                            backend=None):
+        import soundfile as sf
+        import numpy as np
+
+        data, sample_rate = sf.read(str(uri) if not hasattr(uri, 'read') else uri,
+                                    dtype='float32', always_2d=True)
+        # data shape: [frames, channels]
+        if frame_offset > 0:
+            data = data[frame_offset:]
+        if num_frames > 0:
+            data = data[:num_frames]
+        tensor = torch.from_numpy(data.T if channels_first else data)  # [C, T] or [T, C]
+        return tensor, sample_rate
+
+    torchaudio.load = _load_via_soundfile
+    torchaudio._soundfile_patched = True
 
 
 def release_gpu_resources(*tensors) -> None:

@@ -2,7 +2,7 @@ import torch
 
 from typing import List, Union
 from tqdm import tqdm
-from .rocm_patch import apply_rocm_patches
+from .rocm_patch import apply_rocm_patches, patch_torchaudio_load
 from .demix import demix
 from .spectrogram import extract_spectrograms
 from .models import load_pretrained_model
@@ -85,6 +85,8 @@ def analyze(
 
   # ROCm 固有バグの回避パッチを適用する（非 ROCm 環境では no-op）。
   apply_rocm_patches()
+  # torchcodec 未インストール時は soundfile フォールバックを適用する。
+  patch_torchaudio_load()
 
   # Clean up the arguments.
   return_list = True
