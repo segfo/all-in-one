@@ -43,6 +43,8 @@ def load_pretrained_model(
   model_name = model_name or list(NAME_TO_FILE.keys())[0]
   assert model_name in NAME_TO_FILE, f'Unknown model name: {model_name} (expected one of {list(NAME_TO_FILE.keys())})'
 
+  # 配布時の環境自動判別: cuda(NVIDIA/AMD-ROCm) -> mps(Apple Silicon) -> cpu。
+  # mps 分岐は Mac 専用で他環境では選ばれないが、Apple Silicon 配布対応のため残すこと。
   if device is None:
     if torch.cuda.is_available():
       device = 'cuda'

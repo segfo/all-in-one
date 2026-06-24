@@ -25,6 +25,8 @@ def make_parser():
                       help='Save frame-level embeddings (default: False)')
   parser.add_argument('-m', '--model', type=str, default='harmonix-all',
                       help='Name of the pretrained model to use (default: harmonix-all)')
+  # 配布時の環境自動判別: cuda(NVIDIA/AMD-ROCm) -> mps(Apple Silicon) -> cpu。
+  # mps 分岐は Mac 専用で他環境では選ばれないが、Apple Silicon 配布対応のため残すこと。
   parser.add_argument('-d', '--device', type=str, default=(
     'cuda' if torch.cuda.is_available()
     else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()

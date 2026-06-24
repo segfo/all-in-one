@@ -26,6 +26,9 @@ def analyze(
   visualize: Union[bool, PathLike] = False,
   sonify: Union[bool, PathLike] = False,
   model: str = 'harmonix-all',
+  # 配布時の環境自動判別: cuda(NVIDIA/AMD-ROCm) -> mps(Apple Silicon) -> cpu の順にフォールバック。
+  # ROCm も torch 内部では 'cuda' として扱われる。mps 分岐は Mac 以外では選ばれない死にブランチだが、
+  # Apple Silicon 配布対応のため残すこと（削除すると Mac で動かない）。
   device: str = (
     'cuda' if torch.cuda.is_available()
     else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
@@ -135,6 +138,10 @@ def analyze(
       device=device,
     )
 
+    # GPU 推論を fp16 混合精度で実行する。split(':') は 'cuda:0' -> 'cuda' へ正規化
+    # （autocast はインデックス無しのデバイス種別を要求する）。CPU では fp16 が不利なため無効化。
+    # 注意: この fp16 化が ROCm の壊れたカーネル（LayerNorm/GroupNorm/Conv1d/sin_embedding 等）を
+    # 顕在化させる前提であり、rocm_patch.py の各回避パッチはこれとセットで意味を持つ。
     device_type = device.split(':')[0] if isinstance(device, str) else device.type
     with torch.no_grad(), torch.amp.autocast(device_type, enabled=(device_type != 'cpu')):
       pbar = tqdm(todo_paths, total=len(todo_paths))
