@@ -161,5 +161,7 @@ all-in-one/
 | [02_chord_detection.md](02_chord_detection.md) | コード検出の設計と思想（stem 投票・downbeat スナップ） |
 | [03_rocm_support.md](03_rocm_support.md) | ROCm / AMD GPU 対応と MPS フォールバック |
 | [04_chord_evaluation.md](04_chord_evaluation.md) | コード精度の評価基盤（`compare_chords.py`・誤り3クラスの計測） |
+| [05_bpm_reference.md](05_bpm_reference.md) | BPM 関数リファレンス（各関数の I/O 仕様・全パラメータ・出力フィールド・デバッグ） |
+| [06_bpm_phase3_report.md](06_bpm_phase3_report.md) | BPM 改良の実験記録（フェーズ3の試行・差し戻しの経緯と設計知見） |
 | [archive/](archive/) | 初期のキー（調性）検出設計（現行思想の源流・歴史記録） |
 | [../README.md](../README.md) | upstream 由来の基本的な使い方・API リファレンス |
