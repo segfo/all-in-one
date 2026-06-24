@@ -53,6 +53,9 @@ class AnalysisResult:
   beat_positions: List[int]
   segments: List[Segment]
   tempo_candidates: List[float] = field(default_factory=list)
+  original_beats: Optional[List[float]] = None
+  original_downbeats: Optional[List[float]] = None
+  original_beat_positions: Optional[List[int]] = None
   activations: Optional[Dict[str, NDArray]] = None
   embeddings: Optional[NDArray] = None
   chords: Optional[List['ChordSegment']] = None
@@ -77,6 +80,9 @@ class AnalysisResult:
       beat_positions=data.get('beat_positions', []),
       segments=[_load_segment(seg) for seg in data['segments']],
       tempo_candidates=data.get('tempo_candidates', []),
+      original_beats=data.get('original_beats'),
+      original_downbeats=data.get('original_downbeats'),
+      original_beat_positions=data.get('original_beat_positions'),
     )
 
     if load_activations:

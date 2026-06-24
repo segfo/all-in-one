@@ -17,13 +17,14 @@ def sonify(
   results: Union[AnalysisResult, List[AnalysisResult]],
   out_dir: PathLike = None,
   multiprocess: bool = True,
+  use_original_beats: bool = False,
 ) -> Union[Tuple[NDArray, float], List[Tuple[NDArray, float]]]:
   return_list = True
   if not isinstance(results, list):
     return_list = False
     results = [results]
 
-  sonif_fn = partial(_sonify, out_dir=out_dir)
+  sonif_fn = partial(_sonify, out_dir=out_dir, use_original_beats=use_original_beats)
   if multiprocess:
     pool = Pool()
     iterator = pool.imap_unordered(sonif_fn, results)
@@ -44,13 +45,14 @@ def sonify(
 def _sonify(
   result: AnalysisResult,
   out_dir: PathLike = None,
+  use_original_beats: bool = False,
 ) -> Tuple[NDArray, float]:
   sr = 44100
   y = demucs.separate.load_track(result.path, 2, sr).numpy()
   # y, sr = librosa.load(result.path, sr=None, mono=False)
 
   length = y.shape[-1]
-  metronome = _sonify_metronome(result, length, sr)
+  metronome = _sonify_metronome(result, length, sr, use_original_beats=use_original_beats)
   boundaries = _sonify_boundaries(result.segments, length, sr)
 
   mixed = y + metronome + boundaries
@@ -73,10 +75,17 @@ def _sonify_metronome(
   result: AnalysisResult,
   length: int,
   sr: float = 44100,
+  use_original_beats: bool = False,
 ):
+  # use_original_beats が True かつ補正前データがある場合はそちらを使用
+  if use_original_beats and result.original_beats is not None:
+    downbeats = np.asarray(result.original_downbeats)
+    beats = np.asarray(result.original_beats)
+  else:
+    downbeats = np.asarray(result.downbeats)
+    beats = np.asarray(result.beats)
+
   # Exclude downbeats from beats.
-  downbeats = np.asarray(result.downbeats)
-  beats = np.asarray(result.beats)
   dists = np.abs(downbeats[:, np.newaxis] - beats).min(axis=0)
   beats = beats[dists > 0.03]
 

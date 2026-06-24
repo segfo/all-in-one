@@ -136,6 +136,83 @@ def _select_representative_bpm(
   return best_candidate
 
 
+def _correct_half_speed_beats(
+  bpm: Optional[int],
+  beats: List[float],
+  downbeats: List[float],
+  beat_positions: List[int],
+  min_half_speed_ratio: float = 0.05,
+) -> Optional[tuple]:
+  """BPMに対してハーフスピードなビート間隔を検出し、中点補間で修正する。
+
+  確定済みBPMから期待ビート間隔を算出し、各ビートギャップが
+  「期待間隔の 1.7〜2.3 倍」に該当するかを個別に判定する。
+  そのようなギャップが全体の min_half_speed_ratio 以上存在する場合に補正を実施。
+
+  グローバル中央値による判定（全曲ハーフスピードの場合のみ有効）と異なり、
+  曲の一部だけがハーフスピードの混在パターンにも対応する。
+
+  補正が不要な場合は None を返す。
+  """
+  if bpm is None or len(beats) < 4:
+    return None
+
+  expected_interval = 60.0 / bpm
+  intervals = np.diff(beats)
+
+  # ハーフスピードギャップ：期待間隔の 1.7〜2.3 倍
+  hs_low = expected_interval * 1.7
+  hs_high = expected_interval * 2.3
+  half_speed_mask = (intervals >= hs_low) & (intervals <= hs_high)
+  half_speed_ratio = float(np.sum(half_speed_mask)) / len(intervals)
+
+  if half_speed_ratio < min_half_speed_ratio:
+    return None  # 補正不要
+
+  # ハーフスピードギャップにのみ中点を補間
+  new_beats = []
+  for i in range(len(beats) - 1):
+    new_beats.append(beats[i])
+    if half_speed_mask[i]:
+      new_beats.append((beats[i] + beats[i + 1]) / 2.0)
+  new_beats.append(beats[-1])
+
+  # ダウンビートも同様に処理（1小節 = beats_per_bar ビートとして期待間隔を計算）
+  beats_per_bar = max(beat_positions) if beat_positions else 4
+  expected_db_interval = expected_interval * beats_per_bar
+  db_hs_low = expected_db_interval * 1.7
+  db_hs_high = expected_db_interval * 2.3
+
+  if len(downbeats) >= 2:
+    db_intervals = np.diff(downbeats)
+    db_half_speed_mask = (db_intervals >= db_hs_low) & (db_intervals <= db_hs_high)
+    new_downbeats = []
+    for i in range(len(downbeats) - 1):
+      new_downbeats.append(downbeats[i])
+      if db_half_speed_mask[i]:
+        new_downbeats.append((downbeats[i] + downbeats[i + 1]) / 2.0)
+    new_downbeats.append(downbeats[-1])
+    new_downbeats.sort()
+  else:
+    new_downbeats = list(downbeats)
+
+  # beat_positions を再計算（ダウンビートでカウンタをリセット）
+  db_list = sorted(new_downbeats)
+  db_idx = 0
+  counter = 0
+  new_beat_positions = []
+  for beat in new_beats:
+    while db_idx + 1 < len(db_list) and beat >= db_list[db_idx + 1] - 1e-6:
+      db_idx += 1
+    if abs(beat - db_list[db_idx]) < 1e-4:
+      counter = 1
+    else:
+      counter += 1
+    new_beat_positions.append(counter)
+
+  return new_beats, new_downbeats, new_beat_positions
+
+
 def _correct_with_downbeat_bpm(
   bpm: Optional[int],
   beats: List[float],
@@ -303,11 +380,31 @@ def run_inference(
       tolerance=3,
     )
 
+    # 半速誤検出補正（BPM確定後に実施）
+    corrected = _correct_half_speed_beats(
+      bpm=bpm,
+      beats=metrical_structure['beats'],
+      downbeats=metrical_structure['downbeats'],
+      beat_positions=metrical_structure['beat_positions'],
+    )
+    if corrected is not None:
+      original_beats = metrical_structure['beats']
+      original_downbeats = metrical_structure['downbeats']
+      original_beat_positions = metrical_structure['beat_positions']
+      metrical_structure['beats'], metrical_structure['downbeats'], metrical_structure['beat_positions'] = corrected
+    else:
+      original_beats = None
+      original_downbeats = None
+      original_beat_positions = None
+
     result = AnalysisResult(
       path=path,
       bpm=bpm,
       segments=functional_structure,
       tempo_candidates=audio_result['tempo_candidates'],
+      original_beats=original_beats,
+      original_downbeats=original_downbeats,
+      original_beat_positions=original_beat_positions,
       **metrical_structure,
     )
 
@@ -387,22 +484,39 @@ def save_results(
   out_dir.mkdir(parents=True, exist_ok=True)
   for result in results:
     out_path = out_dir / result.path.with_suffix('.json').name
-    result = asdict(result)
-    result['path'] = str(result['path'])
+    result_dict = asdict(result)
+    result_dict['path'] = str(result_dict['path'])
 
     if without_beats:
-      result.pop('beats', None)
-      result.pop('downbeats', None)
-      result.pop('beat_positions', None)
+      result_dict.pop('beats', None)
+      result_dict.pop('downbeats', None)
+      result_dict.pop('beat_positions', None)
+      result_dict.pop('original_beats', None)
+      result_dict.pop('original_downbeats', None)
+      result_dict.pop('original_beat_positions', None)
+    else:
+      # 補正が行われなかった場合（None）はJSONに含めない
+      for key in ('original_beats', 'original_downbeats', 'original_beat_positions'):
+        if result_dict.get(key) is None:
+          result_dict.pop(key, None)
 
-    activations = result.pop('activations')
+    activations = result_dict.pop('activations')
     if activations is not None:
       np.savez(str(out_path.with_suffix('.activ.npz')), **activations)
 
-    embeddings = result.pop('embeddings')
+    embeddings = result_dict.pop('embeddings')
     if embeddings is not None:
       np.save(str(out_path.with_suffix('.embed.npy')), embeddings)
 
-    json_str = json.dumps(result, indent=2)
+    raw_chords = result_dict.pop('chords', None) or []
+    if raw_chords:
+      raw_chord_path = out_path.with_name(out_path.stem + '_raw_chord.json')
+      raw_chord_path.write_text(json.dumps(raw_chords, indent=2))
+    result_dict['chords'] = [
+      {'start': c['start'], 'end': c['end'], 'label': c['label'], 'label_raw': c['label_raw'], 'confidence': c['confidence']}
+      for c in raw_chords
+    ] if raw_chords else None
+
+    json_str = json.dumps(result_dict, indent=2)
     json_str = compact_json_number_array(json_str)
     out_path.with_suffix('.json').write_text(json_str)

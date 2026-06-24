@@ -49,6 +49,8 @@ def make_parser():
                       help='Exclude beats/downbeats/beat_positions from output JSON (default: False)')
   parser.add_argument('--chords', action='store_true', default=False,
                       help='Run madmom chord detection and include chord segments in output (default: False)')
+  parser.add_argument('--sonify-original-beats', action='store_true', default=False,
+                      help='Use original (pre-correction) beats/downbeats for sonification (default: False)')
   return parser
 
 
@@ -78,6 +80,7 @@ def main():
     font=args.font,
     without_beats=args.without_beats,
     detect_chords=args.chords,
+    use_original_beats=args.sonify_original_beats,
   )
 
   print(f'=> Analysis results are successfully saved to {args.out_dir}')

@@ -41,6 +41,7 @@ def analyze(
   font: str = None,
   without_beats: bool = False,
   detect_chords: bool = True,
+  use_original_beats: bool = False,
 ) -> Union[AnalysisResult, List[AnalysisResult]]:
   """
   Analyzes the provided audio files and returns the analysis results.
@@ -188,7 +189,7 @@ def analyze(
   if sonify:
     if sonify is True:
       sonify = './sonif'
-    _sonify(results, out_dir=sonify, multiprocess=multiprocess)
+    _sonify(results, out_dir=sonify, multiprocess=multiprocess, use_original_beats=use_original_beats)
     print(f'=> Sonified tracks are successfully saved to {sonify}')
 
   if not keep_byproducts:
