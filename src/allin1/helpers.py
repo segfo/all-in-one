@@ -160,6 +160,87 @@ def _correct_with_downbeat_bpm(
   return bpm
 
 
+def _relabel_end_segments_by_rms(
+  segments: list,
+  y: np.ndarray,
+  sr: int,
+  beats: List[float] = None,
+  rms_threshold: float = 0.01,
+  hop_size: float = 0.05,
+  min_duration: float = 1.0,
+) -> list:
+  """
+  'end' ラベルのセグメントをフレームごとの RMS で解析し、outro / end に分割する。
+
+  - beats が 0 の場合：Outro セグメントは End とみなす（ビートがないため）
+  - 全フレームが閾値以下        → 変更なし（end のまま）
+  - 全フレームが閾値超          → セグメント全体を outro に変換
+  - 途中から無音に転落          → 音あり部分を outro、無音部分を end に分割
+  min_duration 未満の端数セグメントが出る場合は分割せず全体を outro にする。
+  """
+  # beats が 0 の場合、Outro セグメントは End とみなす
+  has_beats = beats is not None and len(beats) > 0
+
+  hop_samples = int(hop_size * sr)
+  result = []
+  did_split = False
+  for seg in segments:
+    if seg.label != 'end':
+      # beats がなく Outro セグメントの場合、End に変更
+      if not has_beats and seg.label == 'outro':
+        seg.label = 'end'
+      result.append(seg)
+      continue
+
+    start_sample = int(seg.start * sr)
+    end_sample = int(seg.end * sr)
+    chunk = y[start_sample:end_sample]
+    if len(chunk) == 0:
+      result.append(seg)
+      continue
+
+    # フレームごとの RMS を計算
+    n_frames = max(1, len(chunk) // hop_samples)
+    frame_rms = np.array([
+      np.sqrt(np.mean(chunk[i * hop_samples:(i + 1) * hop_samples] ** 2))
+      for i in range(n_frames)
+    ])
+
+    above = np.where(frame_rms > rms_threshold)[0]
+    if len(above) == 0:
+      # 全フレームが無音 → end のまま
+      result.append(seg)
+      continue
+
+    last_audio_frame = above[-1]
+    split_time = seg.start + (last_audio_frame + 1) * hop_size
+
+    outro_duration = split_time - seg.start
+    end_duration = seg.end - split_time
+
+    if outro_duration >= min_duration and end_duration >= min_duration:
+      # 有効な分割点あり → outro + end の2セグメントに分割
+      result.append(Segment(start=seg.start, end=split_time, label='outro', bpm=seg.bpm))
+      result.append(Segment(start=split_time, end=seg.end, label='end', bpm=seg.bpm))
+      did_split = True
+    else:
+      # 分割しても端数が短すぎる → 全体を outro に変換
+      seg.label = 'outro'
+      result.append(seg)
+
+  # 分割が発生した場合のみ、連続する end セグメントを結合する
+  if did_split:
+    merged = []
+    for seg in result:
+      if merged and merged[-1].label == 'end' and seg.label == 'end':
+        merged[-1] = Segment(start=merged[-1].start, end=seg.end, label='end', bpm=merged[-1].bpm)
+      else:
+        merged.append(seg)
+    return merged
+
+  return result
+
+
 def run_inference(
   path: Path,
   spec_path: Path,
@@ -191,9 +272,15 @@ def run_inference(
 
     # セクションごとの BPM を tempogram ロジックで推定
     segment_bpms = estimate_bpm_per_segment_from_audio(y, sr, functional_structure)
-    del y  # セクション別推定完了後に解放
     for segment, seg_bpm in zip(functional_structure, segment_bpms):
       segment.bpm = seg_bpm
+
+    # beats が 0 で Outro セグメントがある場合は End とみなす
+    # 'end' ラベルかつ音声 RMS が有意なセグメントを 'outro' に変換
+    functional_structure = _relabel_end_segments_by_rms(
+      functional_structure, y, sr, metrical_structure['beats']
+    )
+    del y  # 以降 y は不要なので解放
 
     # セクション BPM のアンサンブルで代表 BPM を再選出
     # bpm_from_beats（全ビートのグローバル分布）を候補に追加して多テンポ曲対応を強化する
