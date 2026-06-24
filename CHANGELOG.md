@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- マルチ環境対応（CUDA / ROCm / Apple MPS / CPU）の設計意図を明文化。`analyze.py` / `cli.py` /
+  `models/loaders.py` のデバイス自動選択と autocast に「配布時に削除しないための意図コメント」を追加
+  （挙動は不変）。`docs/00_overview.md` に対応環境マトリクス、`docs/03_rocm_support.md` に
+  「autocast(fp16) が ROCm バグ群を顕在化させる前提」という因果の記述、`README.md` に
+  *Supported environments* 節を追加。
+
 ### Changed
 
 - `chord_detection.py`: コード認識器を madmom の DeepChroma（`DeepChromaProcessor` +
@@ -37,14 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analyze.py` / `cli.py`: デフォルトデバイス選択に MPS (Apple Silicon) フォールバックを追加。
   CUDA 未検出時に MPS が利用可能な場合は `'mps'` を選択するようになった。
 - `models/loaders.py`: デバイス自動選択の CUDA チェックを `device_count()` から `is_available()` に統一。
-  また CUDA 非検出時に MPS (Apple Silicon) を検出してから CPU にフォールバックするよう拡張。
-- `analyze.py`: `torch.amp.autocast` の device_type が `'cuda'` にハードコードされていた問題を修正。
-  `device` 変数から動的に device_type を導出することで ROCm / MPS でも正しく動作するようになった。
-- `rocm_patch.py`: `_rocm_create_sin_embedding` のデフォルト引数 `device='cpu'` を `None` に変更。
-  引数省略時は CUDA → MPS → CPU の順でランタイム検出するようになった。
-- `models/allinone.py`: `reset_parameters` 内の `torch.tensor(...)` を `math.log` スカラーに置き換え。
-  デバイス未指定の `torch.tensor` は常に CPU テンソルを生成するため、モデルを GPU に移動後に
-  `fill_()` へ渡すとデバイス不一致になる (ROCm Bug #17)。Python スカラーに置き換えることで回避。
 
 ## [1.1.0] - 2023-10-10
 

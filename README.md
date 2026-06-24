@@ -20,6 +20,7 @@ This package provides models for music structure analysis, predicting:
 **Table of Contents**
 
 - [Installation](#installation)
+- [Supported environments](#supported-environments)
 - [Usage for CLI](#usage-for-cli)
 - [Usage for Python](#usage-for-python)
 - [Visualization & Sonification](#visualization--sonification)
@@ -67,6 +68,23 @@ For macOS:
 ```shell
 brew install ffmpeg
 ```
+
+
+## Supported environments
+
+This fork runs from a **single codebase across four backends**. The device is auto-detected
+in the order `cuda → mps → cpu`, so you normally don't need to pass `--device`.
+
+| Environment | Status | How it works |
+|---|---|---|
+| **NVIDIA CUDA** | ✅ | fp16 autocast inference (upstream path) |
+| **AMD ROCm / HIP** | ✅ | This fork's addition: `apply_rocm_patches()` upcasts the few ROCm-broken kernels to fp32 / falls back to CPU. Active only when ROCm is detected. See [docs/03_rocm_support.md](docs/03_rocm_support.md). |
+| **Apple Silicon (MPS)** | ✅ | `mps` is auto-selected; demucs STFT/iSTFT falls back to CPU because MPS lacks complex-number support (demucs #435/#432). |
+| **CPU only** | ✅ | autocast is disabled on CPU; runs in fp32. |
+
+> Each backend's branch is guarded so it is a no-op on the other environments
+> (`is_rocm()`, `mps.is_available()`, `device_type != 'cpu'`). Keep these branches —
+> removing them only narrows the set of machines the package runs on.
 
 
 ## Usage for CLI
