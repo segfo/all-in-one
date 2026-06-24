@@ -15,6 +15,10 @@ temp.py
 # ルートの CLAUDE.md は公開リポジトリに含めず別リポジトリで管理する（ルート限定）
 /CLAUDE.md
 
+# ローカル固有のジャンクション/symlink（絶対パス参照・他マシンで無意味）
+/music
+/rocm_7.2_wheel
+
 .idea/
 NATTEN/
 ROCm対応記録*/
