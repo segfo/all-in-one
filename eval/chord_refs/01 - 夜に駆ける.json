@@ -1,0 +1,23 @@
+{
+  "track": "01 - 夜に駆ける",
+  "source": "U-FRET",
+  "capo": 0,
+  "key_hint": "Cm",
+  "note": "U-FRET のコード譜（カポ0=原曲キー）から手起こし。秒は概算で、コード列は順序ベースで比較する。capo を 0 以外で写した場合は必ず capo 値を入れること（capo>0 の表記は label+capo 半音が実音）。",
+  "sections": [
+    {
+      "label": "intro1 (vocal)",
+      "approx_start": 1.76,
+      "approx_end": 16.99,
+      "note": "「沈むように溶けてゆくように」〜「二人だけの空が広がる夜に」。実際は歌＋疎な伴奏で、検出は N（無コード）になりやすい既知の苦手区間。",
+      "chords": ["Ab", "Bb", "Gm7", "Cm7", "Ab", "G7", "Cm7", "Bbm7", "Eb7", "Ab", "Bb", "Gm7", "Cm7"]
+    },
+    {
+      "label": "intro2 (inst)",
+      "approx_start": 16.99,
+      "approx_end": 31.76,
+      "note": "インスト的イントロ。Ab→G7→Cm7 を基調に Bbm7/Eb7 を挟むパターンが反復。",
+      "chords": ["Ab", "G7", "Cm7", "Ab", "G7", "Cm7", "Bbm7", "Ab", "G7", "Cm7", "Bbm7", "Eb7", "Ab", "G7", "Cm7", "Bbm7"]
+    }
+  ]
+}
