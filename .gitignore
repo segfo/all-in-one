@@ -7,6 +7,11 @@ struct/
 viz/
 sonif/
 
+# 実験コード・生成物・使い捨てスクリプト（コミット不要）
+music_ml/
+outputs/
+temp.py
+
 .idea/
 NATTEN/
 ROCm対応記録*/
