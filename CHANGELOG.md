@@ -7,12 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `chord_detection.py`: コード認識器を madmom の DeepChroma（`DeepChromaProcessor` +
+  `DeepChromaChordRecognitionProcessor`）から **CNN ベース**（`CNNChordFeatureProcessor` +
+  `CRFChordRecognitionProcessor`）へ差し替え。正解曲（`01 - 夜に駆ける`）で退行なし
+  （種別精度 92%→96%、ルート 83%・N 2%・ピッチずれ無しは同等）、synth/EDM 系の難曲で
+  N（No Chord）を大幅削減（認識器単体で 46%→9% 等）。stem 投票・無音ゲート・mix fallback の
+  架構は維持。DeepChroma 専用だった numpy 2.x 対策パッチ（`_patch_madmom_crf`）を撤去。
+
 ### Added
 
 - `chord_detection.py`: stem 無音ゲートを追加。各区間で stem のフレーム RMS が自ピークの
   相対閾値（`STEM_SILENCE_REL`）未満なら投票から除外する。これにより**ベースが鳴っていない
   区間（イントロ等）で bass の `N` 票が `other` の実コードを潰す問題**を解消し、bass 無音時は
   `other`/`vocals` がコードを決めるようになった。
+- `chord_detection.py`: mix フォールバックを追加。`mix`（オリジナル音源）を常に併走させ、
+  **primary（bass/other/vocals）投票が `N` の区間に限り** mix のコードで穴埋めする
+  （既存の非 `N` 検出は上書きしないため回帰リスク無し）。分離 stem 単体では `N` でも
+  全和声が混ざった mix なら拾える区間があるため。synth/EDM 系 2 曲で N 率 64%→36% / 59%→28%。
+  madmom 認識を mix にも 1 回追加実行するコストがかかる。
 
 ### Changed
 

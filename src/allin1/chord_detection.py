@@ -58,33 +58,6 @@ def detect_chords(
     return []
 
 
-def _patch_madmom_crf():
-  """numpy 2.x 互換性パッチ。
-
-  ConditionalRandomField.load() は pickle.load() で __init__ をスキップするため、
-  モデル重み (pi/tau/c/A/W) が文字列型 (<U*) でロードされることがある。
-  process() 内で初回呼び出し時に float64 へ変換して修正する。
-  """
-  import numpy as np
-  from madmom.ml.crf import ConditionalRandomField
-
-  if getattr(ConditionalRandomField, '_numpy2_patched', False):
-    return
-
-  orig_process = ConditionalRandomField.process
-
-  def patched_process(self, observations, **kwargs):
-    # モデル重みが文字列型になっている場合は float64 に変換（初回のみ）
-    for attr in ('pi', 'tau', 'c', 'A', 'W'):
-      val = getattr(self, attr, None)
-      if val is not None and hasattr(val, 'dtype') and val.dtype.kind in ('U', 'S'):
-        setattr(self, attr, np.asarray(val, dtype=np.float64))
-    return orig_process(self, np.asarray(observations, dtype=np.float64), **kwargs)
-
-  ConditionalRandomField.process = patched_process
-  ConditionalRandomField._numpy2_patched = True
-
-
 def _compute_stem_activity(path: Path) -> StemActivity:
   """stem 音声のフレーム RMS エンベロープとピーク RMS を返す。
 
@@ -123,28 +96,35 @@ def _run_madmom_multi(
   audio_path: Path,
   demix_path: Optional[Path],
 ) -> Tuple[Dict[str, List[ChordSegment]], Dict[str, StemActivity]]:
-  # DeepChromaChordRecognitionProcessor は CRF + ラベル変換のみで、
-  # 音声ファイルを直接受け取らない。先に DeepChromaProcessor でクロマ特徴量を抽出する。
-  from madmom.audio.chroma import DeepChromaProcessor
-  from madmom.features.chords import DeepChromaChordRecognitionProcessor
+  # CNN ベースのコード認識器（CNNChordFeatureProcessor + CRFChordRecognitionProcessor）。
+  # DeepChroma より N が少なく種別精度も高い（docs/02_chord_detection.md §9 の A/B 実測）。
+  # CNN 特徴抽出器は音声ファイルを直接受け取る。
+  from madmom.features.chords import (
+    CNNChordFeatureProcessor,
+    CRFChordRecognitionProcessor,
+  )
 
-  _patch_madmom_crf()
+  feat_proc = CNNChordFeatureProcessor()      # モデルロードを伴うのでループ外で1回だけ生成
+  decode = CRFChordRecognitionProcessor()
 
-  # stem ファイルを収集。存在しなければオリジナル音源にフォールバック。
+  # stem ファイルを収集。
   stems: Dict[str, Path] = {}
   if demix_path is not None:
     for name in ("bass", "other", "vocals"):
       p = demix_path / f"{name}.wav"
       if p.exists():
         stems[name] = p
-  if not stems:
-    stems["mix"] = audio_path
+  # mix（オリジナル音源）を常に併走させる。
+  # - stem が無ければ mix が単独の主役（従来のフォールバック）。
+  # - stem がある場合、mix は primary 投票が N の区間を埋める fallback voter として使う
+  #   （_merge_stem_results 参照）。分離 stem 単体では N でも、全和声が混ざった mix なら
+  #   コードを取れる区間があるため。
+  stems["mix"] = audio_path
 
   results: Dict[str, List[ChordSegment]] = {}
   activities: Dict[str, StemActivity] = {}
   for name, path in stems.items():
-    chroma = DeepChromaProcessor()(str(path))
-    output = DeepChromaChordRecognitionProcessor()(chroma)
+    output = decode(feat_proc(str(path)))
 
     segments = []
     for row in output:
@@ -175,7 +155,15 @@ def _merge_stem_results(
 ) -> List[ChordSegment]:
   activities = activities or {}
 
-  # 全stemの境界時刻を収集してタイムラインを構築
+  # primary = mix 以外の分離 stem。これらが無い場合は mix を主役として投票する。
+  primary_stems = [s for s in stem_segments if s != "mix"]
+  has_primary = len(primary_stems) > 0
+  voting_stems = primary_stems if has_primary else list(stem_segments)
+
+  def _chord_at(stem: str, t: float) -> str:
+    return next((s.label for s in stem_segments[stem] if s.start <= t < s.end), "N")
+
+  # 全stemの境界時刻を収集してタイムラインを構築（mix の境界も含める）
   boundaries = sorted({
     t
     for segs in stem_segments.values()
@@ -186,18 +174,28 @@ def _merge_stem_results(
   merged = []
   for t0, t1 in zip(boundaries[:-1], boundaries[1:]):
     votes: Dict[str, float] = {}
-    for stem, segs in stem_segments.items():
+    for stem in voting_stems:
       # 無音ゲート: この区間で stem が鳴っていなければ投票させない。
       # bass 無音区間では bass の "N" 票が捨てられ、other/vocals が和声を決める。
       activity = activities.get(stem)
       if activity is not None and not _stem_active(activity, t0, t1):
         continue
-      chord = next((s.label for s in segs if s.start <= t0 < s.end), "N")
+      chord = _chord_at(stem, t0)
       if stem == "bass":
         chord = root_only(chord)  # bass はルート音のみで投票
       votes[chord] = votes.get(chord, 0) + STEM_WEIGHTS.get(stem, 0)
     # 全 stem が無音 → 票が無い区間は "N"（No Chord）
     best = max(votes, key=votes.get) if votes else "N"
+
+    # mix fallback: primary 投票が N の区間のみ、鳴っている mix のコードで穴埋めする。
+    # 既存の非 N 検出は上書きしないため回帰リスクは無い。
+    if has_primary and best == "N":
+      mix_act = activities.get("mix")
+      if mix_act is None or _stem_active(mix_act, t0, t1):
+        mix_chord = _chord_at("mix", t0)
+        if mix_chord != "N":
+          best = mix_chord
+
     merged.append(ChordSegment(start=t0, end=t1, label=best, label_raw=best))
 
   return merged
